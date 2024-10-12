@@ -1,6 +1,7 @@
 import { Inter } from "next/font/google";
 import Head from "next/head";
 import { CardanoWallet, MeshBadge } from "@meshsdk/react";
+import Link from "next/link";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -45,15 +46,13 @@ export default function Home() {
             </p>
           </a>
 
-          <a
-            href="https://meshjs.dev/react"
+          <Link href="/chat"
             className="bg-gray-800 rounded-xl border border-white hover:scale-105 transition max-w-96 p-5 m-5 md:mx-auto lg:mx-5 md:col-span-2 lg:col-span-1 ">
-            <h2 className="text-2xl font-bold mb-2">React components</h2>
+            <h2 className="text-2xl font-bold mb-2">OpenAI Chat</h2>
             <p className="text-gray-400">
-              Useful React UI components and hooks, seamlessly integrate them
-              into your app, and bring the user interface to life.
+              Try out our real-time chat interface powered by OpenAI's GPT-4 model.
             </p>
-          </a>
+          </Link>
         </div>
       </main>
       <footer className="p-8 border-t border-gray-300 flex justify-center">
