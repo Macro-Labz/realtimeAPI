@@ -1,9 +1,10 @@
 import { NextApiRequest, NextApiResponse } from 'next';
 import WebSocket from 'ws';
+import pako from 'pako';
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === 'POST') {
-    const { message, audioData } = req.body;
+    const { message, audioData, isCompressed, chunkIndex, totalChunks } = req.body;
 
     const url = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01";
     const ws = new WebSocket(url, {
@@ -54,17 +55,25 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     ws.on("open", function open() {
       console.log("Connected to server.");
       
+      let processedAudioData = audioData;
+      if (isCompressed) {
+        // Decompress the data
+        const compressedData = Uint8Array.from(atob(audioData), c => c.charCodeAt(0));
+        const decompressedData = pako.inflate(compressedData);
+        processedAudioData = new TextDecoder().decode(decompressedData);
+      }
+
       // Send user message or audio
       const userEvent = {
         type: 'conversation.item.create',
         item: {
           type: 'message',
           role: 'user',
-          content: audioData
+          content: processedAudioData
             ? [
                 {
                   type: 'input_audio',
-                  audio: audioData
+                  audio: processedAudioData
                 }
               ]
             : [

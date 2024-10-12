@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import Head from 'next/head';
+import pako from 'pako'; // You'll need to install this package: npm install pako @types/pako
 
 export default function Chat() {
   const [messages, setMessages] = useState<{ role: string; content: string }[]>([]); // Define the type of messages
@@ -156,48 +157,72 @@ export default function Chat() {
       setIsLoading(true);
       try {
         const arrayBuffer = await audioBlob.arrayBuffer();
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
         const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
         const channelData = audioBuffer.getChannelData(0); // Get mono channel data
 
         const base64AudioData = base64EncodeAudio(channelData);
+        
+        // Compress the audio data
+        const compressedData = pako.deflate(base64AudioData);
+        const compressedBase64 = btoa(new Uint8Array(compressedData).reduce((data, byte) => data + String.fromCharCode(byte), ''));
 
-        const response = await fetch('/api/chat', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ audioData: base64AudioData }),
-        });
-
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
+        // Split the compressed data into chunks of 1MB
+        const chunkSize = 1024 * 1024; // 1MB
+        const chunks: string[] = [];
+        for (let i = 0; i < compressedBase64.length; i += chunkSize) {
+          chunks.push(compressedBase64.slice(i, i + chunkSize));
         }
 
-        const data = await response.json();
-        
-        if (data.error) {
-          throw new Error(data.error);
-        }
+        let fullResponse = '';
+        for (let i = 0; i < chunks.length; i++) {
+          const response = await fetch('/api/chat', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ 
+              audioData: chunks[i],
+              isCompressed: true,
+              chunkIndex: i,
+              totalChunks: chunks.length
+            }),
+          });
 
-        console.log("Received data:", {
-          response: data.response,
-          audioDataLength: data.audioData ? data.audioData.length : 0,
-          audioMimeType: data.audioMimeType
-        });
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
 
-        const assistantMessage = { role: 'assistant', content: data.response };
-        setMessages(prevMessages => [...prevMessages, assistantMessage]);
-        
-        // Play the audio
-        if (data.audioData && data.audioMimeType) {
-          console.log("Audio data received, length:", data.audioData.length);
-          await playAudio(data.audioData, data.audioMimeType, data.response);
-        } else {
-          console.warn('No audio data received');
-          // Fallback: Use browser's built-in speech synthesis
-          const utterance = new SpeechSynthesisUtterance(data.response);
-          window.speechSynthesis.speak(utterance);
+          const data = await response.json();
+          
+          if (data.error) {
+            throw new Error(data.error);
+          }
+
+          fullResponse += data.response;
+
+          // If it's the last chunk, handle the audio response
+          if (i === chunks.length - 1) {
+            console.log("Received data:", {
+              response: fullResponse,
+              audioDataLength: data.audioData ? data.audioData.length : 0,
+              audioMimeType: data.audioMimeType
+            });
+
+            const assistantMessage = { role: 'assistant', content: fullResponse };
+            setMessages(prevMessages => [...prevMessages, assistantMessage]);
+            
+            // Play the audio
+            if (data.audioData && data.audioMimeType) {
+              console.log("Audio data received, length:", data.audioData.length);
+              await playAudio(data.audioData, data.audioMimeType, fullResponse);
+            } else {
+              console.warn('No audio data received');
+              // Fallback: Use browser's built-in speech synthesis
+              const utterance = new SpeechSynthesisUtterance(fullResponse);
+              window.speechSynthesis.speak(utterance);
+            }
+          }
         }
       } catch (error: unknown) {
         console.error('Error:', error);
@@ -229,15 +254,8 @@ export default function Chat() {
   }
 
   function base64EncodeAudio(float32Array: Float32Array): string {
-    const arrayBuffer = floatTo16BitPCM(float32Array);
-    let binary = '';
-    const bytes = new Uint8Array(arrayBuffer);
-    const chunkSize = 0x8000; // 32KB chunk size
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-      const chunk = bytes.subarray(i, i + chunkSize);
-      binary += String.fromCharCode.apply(null, Array.from(chunk));
-    }
-    return btoa(binary);
+    const buffer = floatTo16BitPCM(float32Array);
+    return btoa(new Uint8Array(buffer).reduce((data, byte) => data + String.fromCharCode(byte), ''));
   }
 
   const sendMessage = async () => {
