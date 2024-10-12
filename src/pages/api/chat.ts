@@ -3,7 +3,7 @@ import WebSocket from 'ws';
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === 'POST') {
-    const { message } = req.body;
+    const { message, audioData } = req.body;
 
     const url = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01";
     const ws = new WebSocket(url, {
@@ -21,13 +21,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       if (!hasResponded) {
         hasResponded = true;
         const audioBuffer = Buffer.concat(audioChunks);
+        console.log("Sending response:", response); // Add this line
         console.log("Sending audio data, length:", audioBuffer.length);
         console.log("First 20 bytes of audio data:", audioBuffer.slice(0, 20).toString('hex'));
         console.log("Last 20 bytes of audio data:", audioBuffer.slice(-20).toString('hex'));
         res.status(200).json({ 
-          response: response || 'No response received', 
+          response: response, // Remove the fallback 'No response received'
           audioData: audioBuffer.toString('base64'),
-          audioMimeType: 'audio/pcm' // Assuming it's raw PCM data
+          audioMimeType: determineAudioMimeType(audioBuffer) // Use the helper function
         });
       }
     };
@@ -53,18 +54,25 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     ws.on("open", function open() {
       console.log("Connected to server.");
       
-      // Send user message
+      // Send user message or audio
       const userEvent = {
         type: 'conversation.item.create',
         item: {
           type: 'message',
           role: 'user',
-          content: [
-            {
-              type: 'input_text',
-              text: message
-            }
-          ]
+          content: audioData
+            ? [
+                {
+                  type: 'input_audio',
+                  audio: audioData
+                }
+              ]
+            : [
+                {
+                  type: 'input_text',
+                  text: message
+                }
+              ]
         }
       };
       ws.send(JSON.stringify(userEvent));

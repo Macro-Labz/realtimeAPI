@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import Head from 'next/head';
 
 export default function Chat() {
@@ -6,6 +6,19 @@ export default function Chat() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null); // Specify the type of the ref
+  const [isRecording, setIsRecording] = useState(false);
+  const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Clean up function to stop recording if component unmounts while recording
+    return () => {
+      if (mediaRecorderRef.current && isRecording) {
+        mediaRecorderRef.current.stop();
+      }
+    };
+  }, [isRecording]);
 
   const playAudio = async (audioData: string, audioMimeType: string, fallbackText: string) => {
     try {
@@ -97,6 +110,134 @@ export default function Chat() {
     for (let i = 0; i < string.length; i++) {
       view.setUint8(offset + i, string.charCodeAt(i));
     }
+  }
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      const audioChunks: Blob[] = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        audioChunks.push(event.data);
+      };
+
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+        setAudioBlob(audioBlob);
+        const url = URL.createObjectURL(audioBlob);
+        setAudioUrl(url);
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+    } catch (error) {
+      console.error('Error starting recording:', error);
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+  };
+
+  const playRecordedAudio = () => {
+    if (audioUrl) {
+      const audio = new Audio(audioUrl);
+      audio.play();
+    }
+  };
+
+  const sendAudioMessage = async () => {
+    if (audioBlob) {
+      setIsLoading(true);
+      try {
+        const arrayBuffer = await audioBlob.arrayBuffer();
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        const channelData = audioBuffer.getChannelData(0); // Get mono channel data
+
+        const base64AudioData = base64EncodeAudio(channelData);
+
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ audioData: base64AudioData }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const data = await response.json();
+        
+        if (data.error) {
+          throw new Error(data.error);
+        }
+
+        console.log("Received data:", {
+          response: data.response,
+          audioDataLength: data.audioData ? data.audioData.length : 0,
+          audioMimeType: data.audioMimeType
+        });
+
+        const assistantMessage = { role: 'assistant', content: data.response };
+        setMessages(prevMessages => [...prevMessages, assistantMessage]);
+        
+        // Play the audio
+        if (data.audioData && data.audioMimeType) {
+          console.log("Audio data received, length:", data.audioData.length);
+          await playAudio(data.audioData, data.audioMimeType, data.response);
+        } else {
+          console.warn('No audio data received');
+          // Fallback: Use browser's built-in speech synthesis
+          const utterance = new SpeechSynthesisUtterance(data.response);
+          window.speechSynthesis.speak(utterance);
+        }
+      } catch (error: unknown) {
+        console.error('Error:', error);
+        let errorMessage = 'An unknown error occurred';
+        if (error instanceof Error) {
+          errorMessage = error.message;
+          console.error('Error name:', error.name);
+          console.error('Error message:', error.message);
+          console.error('Error stack:', error.stack);
+        }
+        setMessages(prevMessages => [...prevMessages, { role: 'assistant', content: `Error: ${errorMessage}` }]);
+      } finally {
+        setIsLoading(false);
+        setAudioBlob(null);
+        setAudioUrl(null);
+      }
+    }
+  };
+
+  function floatTo16BitPCM(float32Array: Float32Array): ArrayBuffer {
+    const buffer = new ArrayBuffer(float32Array.length * 2);
+    const view = new DataView(buffer);
+    let offset = 0;
+    for (let i = 0; i < float32Array.length; i++, offset += 2) {
+      let s = Math.max(-1, Math.min(1, float32Array[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    return buffer;
+  }
+
+  function base64EncodeAudio(float32Array: Float32Array): string {
+    const arrayBuffer = floatTo16BitPCM(float32Array);
+    let binary = '';
+    const bytes = new Uint8Array(arrayBuffer);
+    const chunkSize = 0x8000; // 32KB chunk size
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const chunk = bytes.subarray(i, i + chunkSize);
+      binary += String.fromCharCode.apply(null, Array.from(chunk));
+    }
+    return btoa(binary);
   }
 
   const sendMessage = async () => {
@@ -194,15 +335,42 @@ export default function Chat() {
             onKeyPress={handleKeyPress}
             className="flex-grow bg-gray-700 text-white p-2 rounded-l-lg focus:outline-none"
             placeholder="Type your message..."
-            disabled={isLoading}
+            disabled={isLoading || isRecording}
           />
           <button
             onClick={sendMessage}
             className="bg-blue-600 text-white p-2 rounded-r-lg hover:bg-blue-700 focus:outline-none"
-            disabled={isLoading}
+            disabled={isLoading || isRecording}
           >
             Send
           </button>
+          <button
+            onClick={isRecording ? stopRecording : startRecording}
+            className={`ml-2 p-2 rounded-lg focus:outline-none ${
+              isRecording ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'
+            }`}
+            disabled={isLoading}
+          >
+            {isRecording ? 'Stop Recording' : 'Start Recording'}
+          </button>
+          {audioUrl && (
+            <button
+              onClick={playRecordedAudio}
+              className="ml-2 bg-yellow-600 text-white p-2 rounded-lg hover:bg-yellow-700 focus:outline-none"
+              disabled={isLoading}
+            >
+              Play Recorded Audio
+            </button>
+          )}
+          {audioBlob && (
+            <button
+              onClick={sendAudioMessage}
+              className="ml-2 bg-purple-600 text-white p-2 rounded-lg hover:bg-purple-700 focus:outline-none"
+              disabled={isLoading}
+            >
+              Send Audio
+            </button>
+          )}
         </div>
       </main>
     </div>
